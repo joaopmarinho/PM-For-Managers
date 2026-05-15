@@ -5,6 +5,11 @@ Stores uploaded CSVs as blobs so they survive container restarts.
 Schema
 ------
 datasets (id, filename, upload_date, row_count, raw_csv TEXT)
+
+DB path resolution order (first writable wins):
+  1. DB_PATH env var  (set explicitly — Docker / local)
+  2. <app_root>/database/storage.db  (relative to this file)
+  3. /tmp/storage.db  (Streamlit Cloud fallback — session-scoped)
 """
 
 import io
@@ -19,12 +24,47 @@ from sqlalchemy import (
     Text,
     create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # ──────────────────────────────────────────────────────────────────
-# Database setup
+# Resilient DB path — works on Docker, local dev, and Streamlit Cloud
 # ──────────────────────────────────────────────────────────────────
-DB_PATH = os.environ.get("DB_PATH", "/app/database/storage.db")
+
+def _resolve_db_path() -> str:
+    """
+    Return the first writable SQLite path from the candidate list.
+    Creates the parent directory automatically when possible.
+    """
+    candidates = [
+        # 1. Explicit env var (Docker / local)
+        os.environ.get("DB_PATH"),
+        # 2. Sibling `database/` dir relative to this file (local dev)
+        os.path.join(os.path.dirname(__file__), "..", "database", "storage.db"),
+        # 3. /tmp — always writable (Streamlit Cloud)
+        "/tmp/storage.db",
+    ]
+
+    for path in candidates:
+        if not path:
+            continue
+        path = os.path.abspath(path)
+        parent = os.path.dirname(path)
+        try:
+            os.makedirs(parent, exist_ok=True)
+            # Probe write access
+            probe = os.path.join(parent, ".write_probe")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+            return path
+        except OSError:
+            continue
+
+    # Should never reach here, but be safe
+    return "/tmp/storage.db"
+
+
+DB_PATH = _resolve_db_path()
 engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
