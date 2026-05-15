@@ -1,0 +1,11 @@
+services:
+  dashboard:
+    build: .
+    container_name: process_mining_dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./database:/app/database
+    environment:
+      - DB_PATH=/app/database/storage.db
+    restart: unless-stopped
